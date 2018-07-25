@@ -1,0 +1,247 @@
+const debug = require("debug")("evolvus-menu:index");
+const model = require("./model/menuSchema");
+const _ = require("lodash");
+
+const collection = require("./db/menu");
+const validate = require("jsonschema").validate;
+const docketClient = require("evolvus-docket-client");
+
+var schema = model.schema;
+var filterAttributes = model.filterAttributes;
+var sortAttributes = model.sortAttributes;
+
+var docketObject = {
+  // required fields
+  menu: "PLATFORM",
+  source: "menu",
+  name: "",
+  createdBy: "",
+  ipAddress: "",
+  status: "SUCCESS", //by default
+  eventDateTime: Date.now(),
+  keyDataAsJSON: "",
+  details: "",
+  //non required fields
+  level: ""
+};
+
+
+module.exports.validate = (tenantId, menuObject) => {
+  return new Promise((resolve, reject) => {
+    if (typeof menuObject === "undefined") {
+      throw new Error("IllegalArgumentException:menuObject is undefined");
+    }
+    var res = validate(menuObject, schema);
+    debug("validation status: ", JSON.stringify(res));
+    if (res.valid) {
+      resolve(res.valid);
+    } else {
+      reject(res.errors);
+    }
+  });
+};
+
+module.exports.save = (tenantId, menuObject) => {
+  return new Promise((resolve, reject) => {
+    try {
+      if (typeof menuObject === 'undefined' || menuObject == null) {
+        throw new Error("IllegalArgumentException: menuObject is null or undefined");
+      }
+      var res = validate(menuObject, schema);
+      debug("validation status: ", JSON.stringify(res));
+      if (!res.valid) {
+        reject(res.errors);
+      } else {
+        // if the object is valid, save the object to the database
+
+        docketObject.name = "menu_save";
+        docketObject.keyDataAsJSON = JSON.stringify(menuObject);
+        docketObject.details = `menu creation initiated`;
+        docketClient.postToDocket(docketObject);
+        collection.save(tenantId, menuObject).then((result) => {
+          debug(`saved successfully ${result}`);
+          resolve(result);
+        }).catch((e) => {
+          debug(`failed to save with an error: ${e}`);
+          reject(e);
+        });
+      }
+      // Other validations here
+    } catch (e) {
+      docketObject.name = "menu_ExceptionOnSave";
+      docketObject.keyDataAsJSON = JSON.stringify(menuObject);
+      docketObject.details = `caught Exception on menu_save ${e.message}`;
+      docketClient.postToDocket(docketObject);
+      debug(`caught exception ${e}`);
+      reject(e);
+    }
+  });
+};
+
+
+// tenantId should be valid
+// createdBy should be requested user, not database object user, used for auditObject
+// ipAddress should ipAddress
+// filter should only have fields which are marked as filterable in the model Schema
+// orderby should only have fields which are marked as sortable in the model Schema
+module.exports.find = (tenantId, filter, orderby, skipCount, limit) => {
+  return new Promise((resolve, reject) => {
+    try {
+      var invalidFilters = _.difference(_.keys(filter), filterAttributes);
+      if (orderby == null || typeof orderby === 'undefined') {
+        orderby = {
+          createdDate: -1
+        };
+      }
+        console.log(filter,"filter");
+      collection.find(tenantId, filter, orderby, skipCount, limit).then((docs) => {
+        debug(`menu(s) stored in the database are ${docs}`);
+        resolve(docs);
+      }).catch((e) => {
+        debug(`failed to find all the menu(s) ${e}`);
+        reject(e);
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+};
+=============================================================================================
+
+const debug = require("debug")("evolvus-menu.test.index");
+const chai = require("chai");
+const mongoose = require("mongoose");
+
+var MONGO_DB_URL = process.env.MONGO_DB_URL || "mongodb://10.10.69.204:27017/TestPlatform_Dev";
+/*
+ ** chaiAsPromised is needed to test promises
+ ** it adds the "eventually" property
+ **
+ ** chai and others do not support async / await
+ */
+const chaiAsPromised = require("chai-as-promised");
+
+const expect = chai.expect;
+chai.use(chaiAsPromised);
+
+const menu = require("../index");
+const db = require("../db/menu");
+const tenantOne = "IVL";
+const tenantTwo = "KOT";
+describe('menu model validation', () => {
+  let menuObject = {
+    "tenantId": "IVL",
+    "applicationCode": "FLUX-CDA",
+    "menuGroupCode": "Audit",
+    "title": "AUDIT",
+    "menuItems": [{
+        "menuItemType": "menu",
+        "applicationCode": "FLUX-CDA",
+        "menuItemCode": "ROLE",
+        "title": "Role Management",
+        "menuItemOrder": 1
+      },
+      {
+        "menuItemType": "menu",
+        "applicationCode": "FLUX-CDA",
+        "menuItemCode": "ROLE",
+        "title": "Role Management",
+        "menuItemOrder": 1
+      }
+    ],
+    "menuGroupOrder": 1,
+    "createdBy": "system",
+    "createdDate": new Date().toISOString(),
+    "lastUpdatedDate": new Date().toISOString()
+  };
+
+  let invalidObject = {
+    //add invalid menu Object here
+    "tenantId": "IVL",
+    "applicationCode": 234547,
+    "menuGroupCode": 456,
+    "title": "AUDIT",
+    "menuItems": [{
+        "menuItemType": "menu",
+        "applicationCode": "FLUX-CDA",
+        "menuItemCode": "ROLE",
+        "title": "Role Management",
+        "menuItemOrder": 1
+      },
+      {
+        "menuItemType": "menu",
+        "applicationCode": "FLUX-CDA",
+        "menuItemCode": "USER",
+        "title": "User Management",
+        "menuItemOrder": 2
+      }
+    ],
+    "menuGroupOrder": 2,
+    "createdDate": new Date().toISOString(),
+    "createdBy": "system",
+    "lastUpdatedDate": new Date().toISOString()
+  };
+
+  let undefinedObject; // object that is not defined
+  let nullObject = null; // object that is null
+
+  // before we start the tests, connect to the database
+  before((done) => {
+    mongoose.connect(MONGO_DB_URL);
+    let connection = mongoose.connection;
+    connection.once("open", () => {
+      debug("ok got the connection");
+      done();
+    });
+  });
+
+  describe("validation against jsonschema", () => {
+    it("valid menu should validate successfully", (done) => {
+      try {
+        var res = menu.validate(tenantOne, menuObject);
+        expect(res)
+          .to.eventually.equal(true)
+          .notify(done);
+        // if notify is not done the test will fail
+        // with timeout
+      } catch (e) {
+        expect.fail(e, null, `valid menu object should not throw exception: ${e}`);
+      }
+    });
+
+    it("invalid menu should return errors", (done) => {
+      try {
+        var res = menu.validate(invalidObject);
+        expect(res)
+          .to.be.rejected
+          .notify(done);
+      } catch (e) {
+        expect.fail(e, null, `exception: ${e}`);
+      }
+    });
+
+    if ("should error out for undefined objects", (done) => {
+        try {
+          var res = menu.validate(undefinedObject);
+          expect(res)
+            .to.be.rejected
+            .notify(done);
+        } catch (e) {
+          expect.fail(e, null, `exception: ${e}`);
+        }
+      });
+
+    if ("should error out for null objects", (done) => {
+        try {
+          var res = menu.validate(nullObject);
+          expect(res)
+            .to.be.rejected
+            .notify(done);
+        } catch (e) {
+          expect.fail(e, null, `exception: ${e}`);
+        }
+      });
+
+  });
+});
+
